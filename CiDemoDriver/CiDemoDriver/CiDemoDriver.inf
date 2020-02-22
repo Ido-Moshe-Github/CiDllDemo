@@ -1,0 +1,75 @@
+;
+; CiDemoDriver.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+DriverVer=
+CatalogFile=CiDemoDriver.cat
+
+[DestinationDirs]
+DefaultDestDir				= %DIRID_DRIVERS%
+CiDemoDriver.DriverFiles	= %DIRID_DRIVERS%            ;%windir%\system32\drivers
+
+[DefaultInstall]
+OptionDesc          = %ServiceDescription%
+CopyFiles           = CiDemoDriver.DriverFiles
+
+[DefaultInstall.Services]
+AddService          = %ServiceName%,,CiDemoDriver.Service
+
+;;
+;; Default uninstall sections
+;;
+
+[DefaultUninstall]
+DelFiles            = CiDemoDriver.DriverFiles
+
+[DefaultUninstall.Services]
+DelService			= %ServiceName%,0x200      ;Ensure service is stopped before deleting
+
+;
+; Services Section
+;
+
+[CiDemoDriver.Service]
+DisplayName      = %ServiceName%
+Description      = %ServiceDescription%
+ServiceBinary    = %12%\%DriverName%.sys        ;%windir%\system32\drivers\
+ServiceType      = %SERVICE_KERNEL_DRIVER%
+StartType        = %SERVICE_DEMAND_START%
+ErrorControl     = %SERVICE_ERROR_NORMAL%
+
+;
+; Copy Files
+;
+
+[CiDemoDriver.DriverFiles]
+CiDemoDriver.sys
+
+[CiDemoDriver.UserFiles]
+; No user files
+
+[SourceDisksFiles]
+CiDemoDriver.sys = 1,,
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[Standard.NT$ARCH$]
+
+[Strings]
+DIRID_DRIVERS = 12
+SERVICE_FILE_SYSTEM_DRIVER = 2
+SERVICE_DEMAND_START = 3
+SERVICE_ERROR_NORMAL = 1
+SERVICE_KERNEL_DRIVER = 1
+ServiceDescription      = "CiDemoDriver"
+ServiceName             = "CiDemoDriver"
+DriverName              = "CiDemoDriver"
+ManufacturerName="Ido Moshe"
+ClassName=""
+DiskName="CiDemoDriver Source Disk"

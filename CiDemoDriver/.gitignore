@@ -1,0 +1,7 @@
+/CiDemoDriver/Debug/*
+/CiDemoDriver/Release/*
+/CiDemoDriver/x64/*
+/Debug/*
+/Release/*
+/x64/*
+/.vs/*

@@ -1,75 +1,86 @@
-#include <ntddk.h> // PsSetCreateProcessNotifyRoutineEx
-#include <wdm.h>
+#include <ntifs.h>
 #include "SignatureCheck.h"
 
+EXTERN_C DRIVER_INITIALIZE DriverEntry;
 
-DRIVER_UNLOAD MyDriverUnload;
-void registerProcessCallback();
-void unregisterProcessCallback();
-void ProcessCreateProcessNotifyRoutineEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo);
-
-extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
-{
-    UNREFERENCED_PARAMETER(DriverObject);
-    UNREFERENCED_PARAMETER(RegistryPath);
-    DriverObject->DriverUnload = MyDriverUnload;
-
-    KdPrint(("CiDemoDriver load\n"));
-
-    registerProcessCallback();
-
-    return STATUS_SUCCESS;
-}
-
-VOID MyDriverUnload(_In_ struct _DRIVER_OBJECT* DriverObject)
-{
-    UNREFERENCED_PARAMETER(DriverObject);
-    KdPrint(("CiDemoDriver unload\n"));
-    unregisterProcessCallback();
-}
-
-void registerProcessCallback()
-{
-    const NTSTATUS registerCallbackStatus = PsSetCreateProcessNotifyRoutineEx(ProcessCreateProcessNotifyRoutineEx, FALSE);
-    if (!NT_SUCCESS(registerCallbackStatus))
-    {
-        KdPrint(("failed to register callback with status %d\n", registerCallbackStatus));
-    }
-    else
-    {
-        KdPrint(("successfully registered callback\n"));
-    }
-}
-
-void unregisterProcessCallback()
-{
-    const NTSTATUS registerCallbackStatus = PsSetCreateProcessNotifyRoutineEx(ProcessCreateProcessNotifyRoutineEx, TRUE);
-    if (!NT_SUCCESS(registerCallbackStatus))
-    {
-        KdPrint(("failed to unregister callback\n"));
-    }
-    else
-    {
-        KdPrint(("successfully unregistered callback\n"));
-    }
-}
+#ifndef LOG
+#define LOG(Format, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[CiDemoDriver] " Format " \n", __VA_ARGS__)
+#endif
 
 void ProcessCreateProcessNotifyRoutineEx(
-    PEPROCESS Process,
-    HANDLE ProcessId,
-    PPS_CREATE_NOTIFY_INFO CreateInfo
+    _Inout_ PEPROCESS Process,
+    _In_ HANDLE ProcessId,
+    _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo
 )
 {
     UNREFERENCED_PARAMETER(Process);
     UNREFERENCED_PARAMETER(ProcessId);
+    UNREFERENCED_PARAMETER(CreateInfo);
 
-    if (CreateInfo == nullptr) return; //process died
+    do
+    {
+        if (KeGetCurrentIrql() > PASSIVE_LEVEL)
+        {
+            break;
+        }
 
-    if (CreateInfo->FileObject == nullptr) return;
-    if (nullptr == CreateInfo->ImageFileName) return;
+        if (CreateInfo == nullptr)
+        {
+            break; // process died
+        }
 
-    KdPrint(("New process - image name: %wZ\n", CreateInfo->ImageFileName));
+#if (NTDDI_VERSION >= NTDDI_WIN10)
+        if (CreateInfo->FileObject != nullptr)
+        {
+            ValidateFileUsingFileObject(CreateInfo->FileObject);
+            break;
+        }
+#endif // NTDDI_VERSION >= NTDDI_WIN10
 
-    validateFileUsingCiValidateFileObject(CreateInfo->FileObject);
-    validateFileUsingCiCheckSignedFile(CreateInfo->ImageFileName);
+        if (CreateInfo->ImageFileName != nullptr)
+        {
+            ValidateFileUsingFileName(CreateInfo->ImageFileName);
+            break;
+        }
+
+    } while (false);
+}
+
+VOID MyDriverUnload(
+    _In_ PDRIVER_OBJECT DriverObject
+)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+
+    PsSetCreateProcessNotifyRoutineEx(ProcessCreateProcessNotifyRoutineEx, TRUE);
+
+    LOG("Unload");
+}
+
+NTSTATUS DriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath
+)
+{
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    LOG("Load");
+
+    do
+    {
+        Status = PsSetCreateProcessNotifyRoutineEx(ProcessCreateProcessNotifyRoutineEx, FALSE);
+        if (!NT_SUCCESS(Status))
+        {
+            LOG("Failed to register callback with status %d", Status);
+            break;
+        }
+
+        DriverObject->DriverUnload = MyDriverUnload;
+
+    } while (false);
+
+    return Status;
 }

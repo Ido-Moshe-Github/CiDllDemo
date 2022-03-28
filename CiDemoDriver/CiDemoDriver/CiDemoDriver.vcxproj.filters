@@ -27,9 +27,6 @@
     <ClInclude Include="..\ci.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\RAIIUtils.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="..\SignatureCheck.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -9,10 +9,11 @@ ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider=%ManufacturerName%
 DriverVer=
 CatalogFile=CiDemoDriver.cat
+PnpLockdown=1
 
 [DestinationDirs]
-DefaultDestDir				= %DIRID_DRIVERS%
-CiDemoDriver.DriverFiles	= %DIRID_DRIVERS%            ;%windir%\system32\drivers
+DefaultDestDir              = %DIRID_DRIVERS%
+CiDemoDriver.DriverFiles    = %DIRID_DRIVERS%            ;%windir%\system32\drivers
 
 [DefaultInstall]
 OptionDesc          = %ServiceDescription%
@@ -29,7 +30,7 @@ AddService          = %ServiceName%,,CiDemoDriver.Service
 DelFiles            = CiDemoDriver.DriverFiles
 
 [DefaultUninstall.Services]
-DelService			= %ServiceName%,0x200      ;Ensure service is stopped before deleting
+DelService          = %ServiceName%,0x200      ;Ensure service is stopped before deleting
 
 ;
 ; Services Section

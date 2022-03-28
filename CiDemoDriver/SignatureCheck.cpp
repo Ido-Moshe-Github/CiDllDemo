@@ -1,202 +1,590 @@
-#include "RAIIUtils.h"
-#include "SignatureCheck.h"
+/*
+ * PROJECT:   https://github.com/Ido-Moshe-Github/CiDllDemo
+ * FILE:      SignatureCheck.cpp
+ * PURPOSE:   Definition for the ci.dll API and Struct.
+ *
+ * LICENSE:   Relicensed under The MIT License from The CC BY 4.0 License
+ *
+ * DEVELOPER: [Ido Moshe, Liron Zuarets, MiroKaku]
+ *
+ */
+
+#include <ntifs.h>
+#include <ntimage.h>
 #include "ci.h"
+#include "SignatureCheck.h"
 
-#define SHA1_IDENTIFIER 0x8004
-#define SHA256_IDENTIFIER 0x800C
-#define IMAGE_DIRECTORY_ENTRY_SECURITY  4
+#pragma warning(disable: 4996)
 
+#ifndef LOG
+#define LOG(Format, ...) DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[CiDemoDriver][" __FUNCTION__ "] " Format " \n", __VA_ARGS__)
+#endif
 
-extern "C" PVOID RtlImageDirectoryEntryToData(PVOID BaseAddress, BOOLEAN MappedAsImage, USHORT Directory, PULONG Size);
-bool inRange(const BYTE* rangeStartAddr, const BYTE* rangeEndAddr, const BYTE* addrToCheck);
-void parsePolicyInfo(const pPolicyInfo policyInfo);
-bool ciCheckSignedFileWrapper(const LPWIN_CERTIFICATE win_cert, ULONG sizeOfSecurityDirectory);
+//
+// copy from https://github.com/MiroKaku/Veil
+//
+// begin
+#ifndef ANSI_STRING_MAX_BYTES
+#define ANSI_STRING_MAX_BYTES ((USHORT)65535)
+#endif // ANSI_STRING_MAX_BYTES
 
+#ifndef ANSI_STRING_MAX_CHARS
+#define ANSI_STRING_MAX_CHARS ANSI_STRING_MAX_BYTES
+#endif
 
-void validateFileUsingCiCheckSignedFile(PCUNICODE_STRING imageFileName)
-{
-    KdPrint(("Validating file using CiCheckSignedFile...\n"));
-
-    FileReadHandleGuard fileHandleGuard(imageFileName);
-    if (!fileHandleGuard.isValid()) return;
-
-    // create section for the file
-    SectionHandleGuard sectionHandleGuard(fileHandleGuard.get());
-    if (!sectionHandleGuard.isValid()) return;
-
-    // get section object from section handle
-    SectionObjectGuard sectionObjectGuard(sectionHandleGuard.get());
-    if (!sectionObjectGuard.isValid()) return;
-
-    // map a view of the section
-    SectionViewGuard viewGuard(sectionObjectGuard.get());
-    if (!viewGuard.isValid()) return;
-
-    // fetch the security directory
-    PVOID securityDirectoryEntry = nullptr;
-    ULONG securityDirectoryEntrySize = 0;
-    securityDirectoryEntry = RtlImageDirectoryEntryToData(
-        viewGuard.getViewBaseAddress(),
-        TRUE, // we tell RtlImageDirectoryEntryToData it's mapped as image because then it will treat the RVA as offset from the beginning of the view, which is what we want. See https://doxygen.reactos.org/dc/d30/dll_2win32_2dbghelp_2compat_8c_source.html#l00102
-        IMAGE_DIRECTORY_ENTRY_SECURITY,
-        &securityDirectoryEntrySize
+#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+_When_(AllocateDestinationString,
+    _At_(DestinationString->MaximumLength, _Out_range_(<= , (SourceString->MaximumLength / sizeof(WCHAR)))))
+    _When_(!AllocateDestinationString,
+        _At_(DestinationString->Buffer, _Const_)
+        _At_(DestinationString->MaximumLength, _Const_))
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    _When_(AllocateDestinationString, _Must_inspect_result_)
+    NTSYSAPI
+    NTSTATUS
+    NTAPI
+    RtlUnicodeStringToUTF8String(
+        _When_(AllocateDestinationString, _Out_ _At_(DestinationString->Buffer, __drv_allocatesMem(Mem)))
+        _When_(!AllocateDestinationString, _Inout_)
+        PUTF8_STRING DestinationString,
+        _In_ PCUNICODE_STRING SourceString,
+        _In_ BOOLEAN AllocateDestinationString
     );
 
-    if (securityDirectoryEntry == nullptr)
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlUTF8StringToUnicodeString(
+    _When_(AllocateDestinationString, _Out_ _At_(DestinationString->Buffer, __drv_allocatesMem(Mem)))
+    _When_(!AllocateDestinationString, _Inout_)
+    PUNICODE_STRING DestinationString,
+    _In_ PUTF8_STRING SourceString,
+    _In_ BOOLEAN AllocateDestinationString
+);
+
+#else // NTDDI_VERSION >= NTDDI_WIN10_VB
+
+_When_(AllocateDestinationString,
+    _At_(DestinationString->MaximumLength, _Out_range_(<= , (SourceString->MaximumLength / sizeof(WCHAR)))))
+    _When_(!AllocateDestinationString,
+        _At_(DestinationString->Buffer, _Const_)
+        _At_(DestinationString->MaximumLength, _Const_))
+    _IRQL_requires_max_(PASSIVE_LEVEL)
+    _When_(AllocateDestinationString, _Must_inspect_result_)
+    FORCEINLINE
+    NTSTATUS
+    NTAPI
+    RtlUnicodeStringToUTF8String(
+        _When_(AllocateDestinationString, _Out_ _At_(DestinationString->Buffer, __drv_allocatesMem(Mem)))
+        _When_(!AllocateDestinationString, _Inout_)
+        PUTF8_STRING DestinationString,
+        _In_ PCUNICODE_STRING SourceString,
+        _In_ BOOLEAN AllocateDestinationString
+    )
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    do
     {
-        KdPrint(("no security directory\n"));
-        return;
-    }
+        ULONG ActualByteCount = 0ul;
 
-    KdPrint(("securityDirectoryEntry found at: %p, size: %x\n",
-        securityDirectoryEntry, securityDirectoryEntrySize));
+        Status = RtlUnicodeToUTF8N(NULL, 0, &ActualByteCount, SourceString->Buffer, SourceString->Length);
+        if (ActualByteCount == 0ul)
+        {
+            break;
+        }
 
-    // Make sure the security directory is contained in the file view
-    const BYTE* endOfFileAddr = static_cast<BYTE*>(viewGuard.getViewBaseAddress()) + viewGuard.getViewSize();
-    const BYTE* endOfSecurityDir = static_cast<BYTE*>(securityDirectoryEntry) + securityDirectoryEntrySize;
-    if (endOfSecurityDir > endOfFileAddr || securityDirectoryEntry < viewGuard.getViewBaseAddress())
-    {
-        KdPrint(("security directory is not contained in file view!\n"));
-        return;
-    }
+        ActualByteCount += sizeof ANSI_NULL;
 
-    // technically, there can be several WIN_CERTIFICATE in a file. This not common, and, for simplicity,
-    // we'll assume there's only one
-    LPWIN_CERTIFICATE winCert = static_cast<LPWIN_CERTIFICATE>(securityDirectoryEntry);
-    KdPrint(("WIN_CERTIFICATE at: %p, revision = %x, type = %x, length = %xd, bCertificate = %p\n",
-        securityDirectoryEntry, winCert->wRevision, winCert->wCertificateType, winCert->dwLength, static_cast<PVOID>(winCert->bCertificate)));
+        if (ActualByteCount >= ANSI_STRING_MAX_BYTES)
+        {
+            return STATUS_INVALID_PARAMETER_2;
+        }
 
-    ciCheckSignedFileWrapper(winCert, securityDirectoryEntrySize);
+        if (AllocateDestinationString)
+        {
+            DestinationString->Buffer = (PSTR)ExAllocatePool(PagedPool, ActualByteCount);
+            if (DestinationString->Buffer == NULL)
+            {
+                Status = STATUS_NO_MEMORY;
+                break;
+            }
+            DestinationString->MaximumLength = (USHORT)ActualByteCount;
+
+            RtlSecureZeroMemory(DestinationString->Buffer, ActualByteCount);
+        }
+        else
+        {
+            if (DestinationString->MaximumLength < ActualByteCount)
+            {
+                Status = STATUS_BUFFER_OVERFLOW;
+                break;
+            }
+        }
+
+        Status = RtlUnicodeToUTF8N(DestinationString->Buffer, DestinationString->MaximumLength, &ActualByteCount, SourceString->Buffer, SourceString->Length);
+        if (!NT_SUCCESS(Status))
+        {
+            if (AllocateDestinationString)
+            {
+                RtlFreeAnsiString(DestinationString);
+            }
+            break;
+        }
+
+        if (ActualByteCount > DestinationString->MaximumLength)
+        {
+            Status = STATUS_BUFFER_OVERFLOW;
+            break;
+        }
+
+        DestinationString->Length = (USHORT)ActualByteCount;
+        DestinationString->Buffer[ActualByteCount / sizeof ANSI_NULL] = ANSI_NULL;
+
+    } while (false);
+
+    return Status;
 }
 
-
-bool ciCheckSignedFileWrapper(const LPWIN_CERTIFICATE win_cert, ULONG sizeOfSecurityDirectory)
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Must_inspect_result_
+FORCEINLINE
+NTSTATUS
+NTAPI
+RtlUTF8StringToUnicodeString(
+    _When_(AllocateDestinationString, _Out_ _At_(DestinationString->Buffer, __drv_allocatesMem(Mem)))
+    _When_(!AllocateDestinationString, _Inout_)
+    PUNICODE_STRING DestinationString,
+    _In_ PUTF8_STRING SourceString,
+    _In_ BOOLEAN AllocateDestinationString
+)
 {
-    // prepare the parameters required for calling CiCheckSignedFile
-    PolicyInfoGuard signerPolicyInfo;
-    PolicyInfoGuard timestampingAuthorityPolicyInfo;
-    LARGE_INTEGER signingTime = {};
-    const int digestSize = 20; // sha1 len, 0x14
-    const int digestIdentifier = 0x8004; // sha1
-    const BYTE digestBuffer[] = // digest of notepad++.exe
-            { 0x83, 0xF6, 0x68, 0x3E, 0x64, 0x9C, 0x70, 0xB9, 0x8D, 0x0B,
-              0x5A, 0x8D, 0xBF, 0x9B, 0xD4, 0x70, 0xE6, 0x05, 0xE6, 0xA7 };
+    NTSTATUS Status = STATUS_SUCCESS;
 
-    // CiCheckSignedFile() allocates memory from the paged pool, so make sure we're at IRQL < 2,
-    // where access to paged memory is allowed
-    NT_ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
-
-    const NTSTATUS status = CiCheckSignedFile(
-        (PVOID)digestBuffer,
-        digestSize,
-        digestIdentifier,
-        win_cert,
-        (int)sizeOfSecurityDirectory,
-        &signerPolicyInfo.get(),
-        &signingTime,
-        &timestampingAuthorityPolicyInfo.get());
-    KdPrint(("CiCheckSignedFile returned 0x%08X\n", status));
-
-    if (NT_SUCCESS(status))
+    do
     {
-        parsePolicyInfo(&signerPolicyInfo.get());
-        return true;
-    }
+        ULONG ActualByteCount = 0ul;
 
-    return false;
+        Status = RtlUTF8ToUnicodeN(NULL, 0, &ActualByteCount, SourceString->Buffer, SourceString->Length);
+        if (ActualByteCount == 0ul)
+        {
+            break;
+        }
+
+        ActualByteCount += sizeof UNICODE_NULL;
+
+        if (ActualByteCount >= UNICODE_STRING_MAX_BYTES)
+        {
+            return STATUS_INVALID_PARAMETER_2;
+        }
+
+        if (AllocateDestinationString)
+        {
+            DestinationString->Buffer = (PWCH)ExAllocatePool(PagedPool, ActualByteCount);
+            if (DestinationString->Buffer == NULL)
+            {
+                Status = STATUS_NO_MEMORY;
+                break;
+            }
+            DestinationString->MaximumLength = (USHORT)ActualByteCount;
+
+            RtlSecureZeroMemory(DestinationString->Buffer, ActualByteCount);
+        }
+        else
+        {
+            if (DestinationString->MaximumLength < ActualByteCount)
+            {
+                Status = STATUS_BUFFER_OVERFLOW;
+                break;
+            }
+        }
+
+        Status = RtlUTF8ToUnicodeN(DestinationString->Buffer, DestinationString->MaximumLength, &ActualByteCount, SourceString->Buffer, SourceString->Length);
+        if (!NT_SUCCESS(Status))
+        {
+            if (AllocateDestinationString)
+            {
+                RtlFreeUnicodeString(DestinationString);
+            }
+            break;
+        }
+
+        if (ActualByteCount > DestinationString->MaximumLength)
+        {
+            Status = STATUS_BUFFER_OVERFLOW;
+            break;
+        }
+
+        DestinationString->Length = (USHORT)ActualByteCount;
+        DestinationString->Buffer[ActualByteCount / sizeof UNICODE_NULL] = UNICODE_NULL;
+
+    } while (false);
+
+    return Status;
+}
+#endif //NTDDI_VERSION < NTDDI_WIN10_VB
+// end
+
+
+const char* AlgIdToString(
+    _In_ ALG_ID AlgId
+)
+{
+    switch (AlgId)
+    {
+    default:
+        return "unknown";
+
+    case CALG_SHA1:
+        return "SHA1";
+
+    case CALG_SHA_256:
+        return "SHA256";
+    }
 }
 
-void validateFileUsingCiValidateFileObject(PFILE_OBJECT fileObject)
+#if (NTDDI_VERSION >= NTDDI_WIN10)
+void PrintPolicyInfo(
+    _In_ const MINCRYPT_POLICY_INFO* PolicyInfo
+)
 {
-    KdPrint(("Validating file using CiValidateFileObject...\n"));
-    NT_ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
-
-    PolicyInfoGuard signerPolicyInfo;
-    PolicyInfoGuard timestampingAuthorityPolicyInfo;
-    LARGE_INTEGER signingTime = {};
-    int digestSize = 64;
-    int digestIdentifier = 0;
-    BYTE digestBuffer[64] = {};
-
-    const NTSTATUS status = CiValidateFileObject(
-        fileObject,
-        0,
-        0,
-        &signerPolicyInfo.get(),
-        &timestampingAuthorityPolicyInfo.get(),
-        &signingTime,
-        digestBuffer,
-        &digestSize,
-        &digestIdentifier
-    );
-
-    KdPrint(("CiValidateFileObject returned 0x%08X\n", status));
-    if (NT_SUCCESS(status))
+    if (PolicyInfo->Size == 0)
     {
-        parsePolicyInfo(&signerPolicyInfo.get());
+        LOG("policy info is empty");
         return;
+    }
+
+    if (PolicyInfo->ChainInfo == nullptr)
+    {
+        LOG("PolicyInfo->ChainInfo is null");
+        return;
+    }
+
+    const MINCRYPT_CHAIN_INFO* ChainInfo = PolicyInfo->ChainInfo;
+    const MINCRYPT_CHAIN_ELEMENT* ChainElements = ChainInfo->ChainElements;
+
+    if (ChainInfo->Size < sizeof(MINCRYPT_CHAIN_INFO) ||
+        ChainInfo->NumberOfChainElement == 0)
+    {
+        LOG("PolicyInfo->ChainInfo is too small.");
+        return;
+    }
+
+    const char* Indentation[] =
+    {
+        ">",
+        "  >",
+        "    >",
+        "      >",
+        "        >",
+        "          >",
+    };
+
+    for (size_t i = ChainInfo->NumberOfChainElement, j = 0u; i > 0u; --i, ++j)
+    {
+        const MINCRYPT_CHAIN_ELEMENT* Element = &ChainElements[i - 1];
+
+        UTF8_STRING SubjectU8 = {};
+        SubjectU8.Buffer = Element->Subject.Data;
+        SubjectU8.Length = Element->Subject.Size;
+        SubjectU8.MaximumLength = SubjectU8.Length;
+
+        UNICODE_STRING Subject = {};
+        RtlUTF8StringToUnicodeString(&Subject, &SubjectU8, TRUE);
+
+        UNICODE_STRING Publisher = {};
+        CiGetCertPublisherName((MINCERT_BLOB*)&Element->Certificate,
+            [](SIZE_T Bytes) { return ExAllocatePool(PagedPool, Bytes); }, &Publisher);
+
+        LOG("%s Cert: size - %u, algorithm - %s, publisher - %wZ, subject - %wZ",
+            Indentation[j],
+            Element->Certificate.Size,
+            AlgIdToString(Element->HashAlgId),
+            &Publisher,
+            &Subject);
+
+        RtlFreeUnicodeString(&Subject);
+        RtlFreeUnicodeString(&Publisher);
     }
 }
+#endif // NTDDI_VERSION >= NTDDI_WIN10
 
-void parsePolicyInfo(const pPolicyInfo policyInfo)
+NTSTATUS ValidateFileLegacyMode(
+    _In_  HANDLE                FileHandle,
+    _In_  PVOID                 Hash,
+    _In_  UINT32                HashSize,
+    _In_  ALG_ID                HashAlgId,
+    _In_  IMAGE_DATA_DIRECTORY* SecurityDirectory,
+    _Out_ MINCRYPT_POLICY_INFO* PolicyInfo,
+    _Out_ LARGE_INTEGER* SigningTime,
+    _Out_ MINCRYPT_POLICY_INFO* TimeStampPolicyInfo
+)
 {
-    if (policyInfo == nullptr)
+    PAGED_CODE();
+
+    NTSTATUS    Status = STATUS_SUCCESS;
+    PVOID       CertDirectory = nullptr;
+    KAPC_STATE  SystemContext = { };
+
+    do
     {
-        KdPrint(("parsePolicyInfo - paramter is null\n"));
-        return;
+        SigningTime->QuadPart = 0;
+
+        CiFreePolicyInfo(PolicyInfo);
+        CiFreePolicyInfo(TimeStampPolicyInfo);
+
+        if (HashSize != MINCRYPT_SHA1_LENGTH)
+        {
+            Status = STATUS_INVALID_IMAGE_HASH;
+            break;
+        }
+
+        if (SecurityDirectory->Size != 0u &&
+            SecurityDirectory->VirtualAddress != 0u)
+        {
+            CertDirectory = ExAllocatePoolWithTag(PagedPool, SecurityDirectory->Size, 'omed');
+            if (CertDirectory == nullptr)
+            {
+                Status = STATUS_NO_MEMORY;
+                break;
+            }
+
+            LARGE_INTEGER   Offset = {};
+            IO_STATUS_BLOCK IoStatusBlock = {};
+
+            Offset.LowPart = SecurityDirectory->VirtualAddress;
+
+            Status = ZwReadFile(FileHandle, nullptr, nullptr, nullptr, &IoStatusBlock,
+                CertDirectory, SecurityDirectory->Size, &Offset, nullptr);
+            if (Status == STATUS_PENDING)
+            {
+                ZwWaitForSingleObject(FileHandle, FALSE, nullptr);
+
+                MemoryBarrier();
+                Status = IoStatusBlock.Status;
+            }
+
+            if (!NT_SUCCESS(Status))
+            {
+                break;
+            }
+
+            KeStackAttachProcess(PsInitialSystemProcess, &SystemContext);
+            {
+                Status = CiCheckSignedFile(
+                    Hash,
+                    HashSize,
+                    HashAlgId,
+                    CertDirectory,
+                    SecurityDirectory->Size,
+                    PolicyInfo,
+                    SigningTime,
+                    TimeStampPolicyInfo);
+            }
+            KeUnstackDetachProcess(&SystemContext);
+
+            if (NT_SUCCESS(Status))
+            {
+                break;
+            }
+
+            if (Status != STATUS_INVALID_IMAGE_HASH)
+            {
+                break;
+            }
+        }
+
+        KeStackAttachProcess(PsInitialSystemProcess, &SystemContext);
+        {
+            Status = CiVerifyHashInCatalog(
+                Hash,
+                HashSize,
+                HashAlgId,
+                FALSE,
+                0,
+                0x2007F,
+                PolicyInfo,
+                nullptr,
+                SigningTime,
+                TimeStampPolicyInfo);
+            if (Status == STATUS_INVALID_IMAGE_HASH)
+            {
+                Status = CiVerifyHashInCatalog(
+                    Hash,
+                    HashSize,
+                    HashAlgId,
+                    TRUE,
+                    0,
+                    0x2007F,
+                    PolicyInfo,
+                    nullptr,
+                    SigningTime,
+                    TimeStampPolicyInfo);
+            }
+        }
+        KeUnstackDetachProcess(&SystemContext);
+
+    } while (false);
+
+    if (CertDirectory)
+    {
+        ExFreePoolWithTag(CertDirectory, 'omed');
     }
 
-    if (policyInfo->structSize == 0)
-    {
-        KdPrint(("policy info is empty\n"));
-        return;
-    }
-
-    if (policyInfo->certChainInfo == nullptr)
-    {
-        KdPrint(("certChainInfo is null\n"));
-        return;
-    }
-
-    const pCertChainInfoHeader chainInfoHeader = policyInfo->certChainInfo;
-
-    const BYTE* startOfCertChainInfo = (BYTE*)(chainInfoHeader);
-    const BYTE* endOfCertChainInfo = (BYTE*)(policyInfo->certChainInfo) + chainInfoHeader->bufferSize;
-
-    if (!inRange(startOfCertChainInfo, endOfCertChainInfo, (BYTE*)chainInfoHeader->ptrToCertChainMembers))
-    {
-        KdPrint(("chain members out of range\n"));
-        return;
-    }
-
-    // need to make sure we have enough room to accomodate the chain member struct
-    if (!inRange(startOfCertChainInfo, endOfCertChainInfo, (BYTE*)chainInfoHeader->ptrToCertChainMembers + sizeof(CertChainMember)))
-    {
-        KdPrint(("chain member out of range\n"));
-        return;
-    }
-
-    // we are interested in the first certificate in the chain - the signer itself
-    pCertChainMember signerChainMember = chainInfoHeader->ptrToCertChainMembers;
-
-    KdPrint(("Signer certificate:\n  digest algorithm - 0x%x\n  size - %zu\n  subject - %.*s\n  issuer - %.*s\n",   \
-        signerChainMember->digestIdetifier,                                                                         \
-        signerChainMember->certificate.size,                                                                        \
-        signerChainMember->subjectName.nameLen,                                                                     \
-        static_cast<char*>(signerChainMember->subjectName.pointerToName),                                           \
-        signerChainMember->issuerName.nameLen,                                                                      \
-        static_cast<char*>(signerChainMember->issuerName.pointerToName))                                            \
-    );
-
-    UNREFERENCED_PARAMETER(signerChainMember);
+    return Status;
 }
 
-bool inRange(const BYTE* rangeStartAddr, const BYTE* rangeEndAddr, const BYTE* addrToCheck)
+#if (NTDDI_VERSION >= NTDDI_WIN10)
+void ValidateFileUsingFileObject(
+    _In_ PFILE_OBJECT FileObject
+)
 {
-    if (addrToCheck > rangeEndAddr || addrToCheck < rangeStartAddr)
-    {
-        return false;
-    }
+    PAGED_CODE();
 
-    return true;
+    LOG("Validating file using CiValidateFileObject...");
+    LOG("Will verify - %wZ", &FileObject->FileName);
+
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    UINT8   Hash[MINCRYPT_MAX_HASH_LENGTH] = {};
+    UINT32  HashSize = sizeof(Hash);
+    ALG_ID  HashAlgId = 0u;
+
+    LARGE_INTEGER        SigningTime = {};
+    MINCRYPT_POLICY_INFO PolicyInfo = {};
+    MINCRYPT_POLICY_INFO TimeStampPolicyInfo = {};
+
+    do
+    {
+        Status = CiValidateFileObject(
+            FileObject,
+            0,
+            0,
+            &PolicyInfo,
+            &TimeStampPolicyInfo,
+            &SigningTime,
+            Hash,
+            &HashSize,
+            &HashAlgId
+        );
+
+        LOG("CiValidateFileObject returned 0x%08X", Status);
+
+        if (!NT_SUCCESS(Status))
+        {
+            break;
+        }
+
+        PrintPolicyInfo(&PolicyInfo);
+
+    } while (false);
+
+    CiFreePolicyInfo(&PolicyInfo);
+    CiFreePolicyInfo(&TimeStampPolicyInfo);
+}
+#endif // NTDDI_VERSION >= NTDDI_WIN10
+
+void ValidateFileUsingFileName(
+    _In_ PCUNICODE_STRING FileName
+)
+{
+    PAGED_CODE();
+
+    LOG("Validating file using CiValidateFileLegacyMode...");
+    LOG("Will verify - %wZ", FileName);
+
+    NTSTATUS Status     = STATUS_SUCCESS;
+    HANDLE   FileHandle = nullptr;
+
+    do
+    {
+        OBJECT_ATTRIBUTES ObjectAttributes = { };
+        InitializeObjectAttributes(
+            &ObjectAttributes,
+            const_cast<PUNICODE_STRING>(FileName),
+            OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+            nullptr,
+            nullptr);
+
+        IO_STATUS_BLOCK IoStatusBlock = { };
+
+        Status = ZwOpenFile(
+            &FileHandle,
+            SYNCHRONIZE | FILE_READ_DATA, // ACCESS_MASK, we use SYNCHRONIZE because we might need to wait on the handle in order to wait for the file to be read
+            &ObjectAttributes,
+            &IoStatusBlock,
+            FILE_SHARE_READ,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT // FILE_SYNCHRONOUS_IO_NONALERT so that zwReadfile will pend for us until reading is done
+        );
+        if (!NT_SUCCESS(Status))
+        {
+            break;
+        }
+
+        LARGE_INTEGER    Offset     = {};
+        IMAGE_NT_HEADERS NtHeader   = {};
+        IMAGE_DOS_HEADER DosHeader  = {};
+
+        Status = ZwReadFile(FileHandle, nullptr, nullptr, nullptr, &IoStatusBlock,
+            &DosHeader, sizeof(IMAGE_DOS_HEADER), &Offset, nullptr);
+        if (!NT_SUCCESS(Status))
+        {
+            break;
+        }
+
+        // !!!!!
+        // By default, all PE files are considered valid.
+        // So, not check PE.
+
+        Offset.LowPart = DosHeader.e_lfanew;
+
+        Status = ZwReadFile(FileHandle, nullptr, nullptr, nullptr, &IoStatusBlock,
+            &NtHeader, sizeof(IMAGE_NT_HEADERS), &Offset, nullptr);
+        if (!NT_SUCCESS(Status))
+        {
+            break;
+        }
+
+        PIMAGE_DATA_DIRECTORY SecurityDirectory = &NtHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
+
+        LARGE_INTEGER         SigningTime = {};
+        MINCRYPT_POLICY_INFO  PolicyInfo  = {};
+        MINCRYPT_POLICY_INFO  TimeStampPolicyInfo = {};
+
+        // digest of notepad++.exe
+        UINT8 Hash[MINCRYPT_SHA1_LENGTH] =
+        {
+            0x83, 0xF6, 0x68, 0x3E, 0x64, 0x9C, 0x70, 0xB9, 0x8D, 0x0B,
+            0x5A, 0x8D, 0xBF, 0x9B, 0xD4, 0x70, 0xE6, 0x05, 0xE6, 0xA7
+        };
+
+        Status = ValidateFileLegacyMode(
+            FileHandle,
+            Hash,
+            MINCRYPT_SHA1_LENGTH,
+            CALG_SHA1,
+            SecurityDirectory,
+            &PolicyInfo,
+            &SigningTime,
+            &TimeStampPolicyInfo);
+        if (!NT_SUCCESS(Status))
+        {
+            LOG("Verification failed!");
+            break;
+        }
+
+#if (NTDDI_VERSION >= NTDDI_WIN10)
+        PrintPolicyInfo(&PolicyInfo);
+#else
+        LOG("Verification succeeded!");
+#endif
+
+    } while (false);
+
+    if (FileHandle)
+    {
+        ZwClose(FileHandle);
+    }
 }

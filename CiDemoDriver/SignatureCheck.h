@@ -1,7 +1,11 @@
 #pragma once
 
-#include <wdm.h>
+void ValidateFileUsingFileName(
+    _In_ PCUNICODE_STRING FileName
+);
 
-
-void validateFileUsingCiValidateFileObject(PFILE_OBJECT FileObject);
-void validateFileUsingCiCheckSignedFile(PCUNICODE_STRING imageFileName);
+#if (NTDDI_VERSION >= NTDDI_WIN10)
+void ValidateFileUsingFileObject(
+    _In_ PFILE_OBJECT FileObject
+);
+#endif // NTDDI_VERSION >= NTDDI_WIN10

@@ -292,72 +292,21 @@ void PrintPolicyInfo(
         SubjectU8.MaximumLength = SubjectU8.Length;
 
         UNICODE_STRING Subject = {};
-        if (NT_SUCCESS(RtlUTF8StringToUnicodeString(&Subject, &SubjectU8, TRUE)))
-        {
-            LOG("%s Cert: size - %u, algorithm - %s, subject - %wZ",
-                Indentation[j],
-                Element->Certificate.Size,
-                AlgIdToString(Element->HashAlgId),
-                &Subject);
+        RtlUTF8StringToUnicodeString(&Subject, &SubjectU8, TRUE);
 
-            RtlFreeUnicodeString(&Subject);
-        }
-    }
-}
+        UNICODE_STRING Publisher = {};
+        CiGetCertPublisherName((MINCERT_BLOB*)&Element->Certificate,
+            [](SIZE_T Bytes) { return ExAllocatePool(PagedPool, Bytes); }, &Publisher);
 
-void PrintPolicyInfoLegacyMode(
-    _In_ const MINCRYPT_POLICY_INFO* PolicyInfo
-)
-{
-    if (PolicyInfo->Size == 0)
-    {
-        LOG("policy info is empty");
-        return;
-    }
+        LOG("%s Cert: size - %u, algorithm - %s, publisher - %wZ, subject - %wZ",
+            Indentation[j],
+            Element->Certificate.Size,
+            AlgIdToString(Element->HashAlgId),
+            &Publisher,
+            &Subject);
 
-    if (PolicyInfo->ChainInfo == nullptr)
-    {
-        LOG("PolicyInfo->ChainInfo is null");
-        return;
-    }
-
-    const MINCRYPT_CHAIN_INFO* ChainInfo = PolicyInfo->ChainInfo;
-    const MINCRYPT_CHAIN_ELEMENT* ChainElements = ChainInfo->ChainElements;
-
-    if (ChainInfo->Size < sizeof(MINCRYPT_CHAIN_INFO) ||
-        ChainInfo->NumberOfChainElement == 0)
-    {
-        LOG("PolicyInfo->ChainInfo is too small.");
-        return;
-    }
-
-    const char* Indentation[] =
-    {
-        ">",
-        "  >",
-        "    >",
-        "      >",
-        "        >",
-        "          >",
-    };
-
-    for (size_t i = ChainInfo->NumberOfChainElement, j = 0u; i > 0u; --i, ++j)
-    {
-        const MINCRYPT_CHAIN_ELEMENT* Element = &ChainElements[i - 1];
-
-        UNICODE_STRING Subject = {};
-
-        if (NT_SUCCESS(CiGetCertPublisherName((MINCERT_BLOB*)&Element->Certificate,
-            [](SIZE_T Bytes) { return ExAllocatePool(PagedPool, Bytes); }, &Subject)))
-        {
-            LOG("%s Cert: size - %u, algorithm - %s, publisher - %wZ",
-                Indentation[j],
-                Element->Certificate.Size,
-                AlgIdToString(Element->HashAlgId),
-                &Subject);
-
-            RtlFreeUnicodeString(&Subject);
-        }
+        RtlFreeUnicodeString(&Subject);
+        RtlFreeUnicodeString(&Publisher);
     }
 }
 #endif // NTDDI_VERSION >= NTDDI_WIN10
@@ -627,7 +576,7 @@ void ValidateFileUsingFileName(
         }
 
 #if (NTDDI_VERSION >= NTDDI_WIN10)
-        PrintPolicyInfoLegacyMode(&PolicyInfo);
+        PrintPolicyInfo(&PolicyInfo);
 #else
         LOG("Verification succeeded!");
 #endif
